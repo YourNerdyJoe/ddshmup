@@ -1,0 +1,50 @@
+.vs/
+.vscode/
+enc_temp_folder/
+go_tcp_server/go_tcp_server
+net.cfg
+
+*.dek
+*.sav
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+!SDL2.dll
+!SDL2_net.dll
+
+# Fortran module files
+#*.mod
+*.smod
+
+# Executables
+*.exe
+*.out
+*.app
+
+*.pdb
+*.map
+*.exp
+
+crash.bin
