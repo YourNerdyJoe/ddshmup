@@ -28,14 +28,14 @@ struct alignas(u32) VPad {
 	constexpr vec2 dir() const {
 		ivec2 iret = idir();
 		vec2 ret = vec2(iret);
-		if(iret.x && iret.y) ret *= 1.f / std::numbers::sqrt2_v<float>;
+		if(iret.x && iret.y) ret *= std::numbers::sqrt2_v<float> * 0.5f; //1/sqrt(2) == sqrt(2)/2
 		return ret;
 	}
 };
 
-struct alignas(u32) Counter {
-	u16 max;
-	u16 value;
+struct CounterView {
+	const u16& max;
+	u16& value;
 
 	constexpr bool isMax() const { return value >= max; }
 	constexpr operator bool() const { return isMax(); }
@@ -43,6 +43,14 @@ struct alignas(u32) Counter {
 
 	constexpr bool update() { if(!max || value < max) value++; return isMax(); }
 	constexpr bool update_looping() { if(++value > max) value = 0; return isMax(); }
+};
+
+struct CounterArray {
+	const u16* maxs;
+	u16* values;
+	constexpr CounterView operator[](size_t i) const {
+		return { maxs[i], values[i] };
+	}
 };
 
 enum {
@@ -100,19 +108,30 @@ struct UserData {
 
 template<size_t N>
 struct CounterMatrix {
-	Counter counters[N];
+	u16 maxs[N];
 	b8 is_looping[N];
 	u8 input[N];
 
-	constexpr auto& operator[](this auto& self, size_t i) { return self.counters[i]; }
-
-	void update() {
+	void update(u16* values) const {
+		CounterArray counters = {maxs, values};
 		for(size_t i = 0; i < N; i++) {
 			if(!input[i] || (counters[input[i]-1])) {
 				if(is_looping[i]) counters[i].update_looping();
 				else counters[i].update();
 			}
 		}
+	}
+};
+
+template<size_t N>
+struct CounterMatrixView {
+	const CounterMatrix<N>& matrix;
+	u16* values;
+
+	inline void update() const { matrix.update(values); }
+
+	constexpr CounterView operator[](size_t i) const {
+		return { matrix.maxs[i], values[i] };
 	}
 };
 
@@ -123,31 +142,97 @@ bool rectContains(vec2 center, vec2 half_dim, vec2 target) {
 		&& target.y < center.y + half_dim.y;
 }
 
-struct Enemy {
-	vec2 pos;
-	vec2 hitbox_half_size;
-	void* bullet_timeline;
-	void* path;
-	u16 time_alive;
-	u16 time_delay;
-	b8 collide_bullets;
-	b8 collide_player;
+constexpr size_t NUM_ENEMY_COUNTERS = 4;
+
+struct Enemy;
+
+struct EnemyBulletPattern {
 	CounterMatrix<4> counters;
 	void (*user_func[2])(Enemy& self, GameState& gs);
+};
+
+struct EnemyType {
+	vec2 hitbox_half_size;
+	b8 collide_bullets;
+	b8 collide_player;
+	EnemyBulletPattern patterns[4];
+};
+
+enum {
+	ENEMY_BOSS1,
+
+	NUM_ENEMY_TYPES,
+};
+
+void boss1_routine(Enemy& self, GameState& gs);
+void boss1_routine2(Enemy& self, GameState& gs);
+
+static const EnemyType enemy_types[] = {
+	{	//ENEMY_BOSS1
+		.hitbox_half_size = { 16, 16 },
+		.collide_bullets = true,
+		.patterns = {{
+			.counters = {
+				.maxs = {30, 300, 120},
+				.is_looping = {true, true, true},
+			},
+			.user_func = { boss1_routine2 },
+		}},
+	},
+};
+
+template<typename T, T* data>
+struct Index {
+	u32 idx;
+	constexpr T& get() const { return data[idx]; }
+	constexpr T& operator*() const { return get(); }
+	constexpr T* operator->() const { return &get(); }
+};
+
+struct Enemy {
+	Index<const EnemyType, enemy_types> type;
+	vec2 pos;
+	u16 time_alive;
+	u16 time_delay;
+	u16 counter_values[NUM_ENEMY_COUNTERS];
+	u8 curr_pattern_idx;
 	UserData<4> user_data;
+
+	constexpr const EnemyBulletPattern& pattern() const {
+		return type->patterns[curr_pattern_idx];
+	}
+
+	constexpr CounterMatrixView<NUM_ENEMY_COUNTERS> counters(this auto& self) {
+		return {self.pattern().counters, self.counter_values};
+	}
 };
 
 enum BulletFlags {
 	B_ACTIVE = (1 << 0),
 };
 
-struct Bullet {
-	vec2 pos;
-	vec2 vel;
+struct Bullet;
+
+struct BulletType {
 	CounterMatrix<4> counters;
 	u8 speed_mod_func;
 	void (*user_func[2])(Bullet& self, GameState& gs);
+};
+
+static const BulletType bullet_types[] = {
+	{},
+};
+
+struct Bullet {
+	Index<const BulletType, bullet_types> type;
+	vec2 pos;
+	vec2 vel;
+	u16 counter_values[4];
 	UserData<4> user_data;
+
+	constexpr CounterMatrixView<4> counters(this auto& self) {
+		return {self.type->counters, self.counter_values};
+	}
 };
 
 struct FreeNode {
@@ -190,13 +275,13 @@ struct GameState {
 };
 
 void boss1_routine(Enemy& self, GameState& gs) {
-	if(!self.counters[3]) return;
+	if(!self.counters()[3]) return;
 	constexpr f32 bullet_speed = 6.f;
-	if(self.counters[0]) {
+	if(self.counters()[0]) {
 		f32 angle = lerp(
 			deg2rad(80.f),
 			deg2rad(100.f),
-			ease(self.counters[1], EASE_LINEAR | EASE_FLAG_PING_PONG)
+			ease(self.counters()[1], EASE_LINEAR | EASE_FLAG_PING_PONG)
 		);
 		Bullet templ = {
 			.vel = rad2vec(angle) * bullet_speed,
@@ -208,7 +293,7 @@ void boss1_routine(Enemy& self, GameState& gs) {
 		gs.bullets.add() = templ;
 	}
 
-	if(self.counters[2]) {
+	if(self.counters()[2]) {
 		vec2 dir = normalize_safe(gs.player.pos - self.pos);
 		if(dir == vec2{0.f}) dir = {0.f, 1.f};
 		gs.bullets.add() = {
@@ -218,24 +303,50 @@ void boss1_routine(Enemy& self, GameState& gs) {
 	}
 }
 
+void boss1_routine2(Enemy& self, GameState& gs) {
+	if(!self.counters()[3]) return;
+	constexpr f32 bullet_speed = 6.f;
+	if(self.counters()[0]) {
+		f32 angles[3];
+		angles[0] = lerp(
+			deg2rad(40.f),
+			deg2rad(90.f),
+			ease(self.counters()[1], EASE_LINEAR | EASE_FLAG_PING_PONG)
+		);
+		angles[1] = angles[0] - deg2rad(15.f);
+		angles[2] = angles[0] + deg2rad(15.f);
+
+		for(f32 angle : angles) {
+			gs.bullets.add() = {
+				.pos = self.pos + vec2{32.f, 0.f},
+				.vel = rad2vec(angle) * bullet_speed,
+			};
+			gs.bullets.add() = {
+				.pos = self.pos + vec2{-32.f, 0.f},
+				.vel = rad2vec(deg2rad(180.f) - angle) * bullet_speed,
+			};
+		}
+	}
+}
+
 void GameState::update(VPad pad) {
 	vec2 vel = pad.dir() * 4.f;
 	if(pad.isDown(B_C)) vel *= 0.5f;
 	player.pos += vel;
 
 	for(auto& enemy : enemies) {
-		enemy.counters.update();
-		for(auto f : enemy.user_func) {
+		enemy.counters().update();
+		for(auto f : enemy.pattern().user_func) {
 			if(f) f(enemy, *this);
 		}
 	}
 
 	for(auto& bullet : bullets) {
-		bullet.counters.update();
-		for(auto f : bullet.user_func) {
+		bullet.counters().update();
+		for(auto f : bullet.type->user_func) {
 			if(f) f(bullet, *this);
 		}
-		bullet.pos += bullet.vel * ease(bullet.counters[0], bullet.speed_mod_func);
+		bullet.pos += bullet.vel * ease(bullet.counters()[0], bullet.type->speed_mod_func);
 		if(distancesq(bullet.pos, player.pos) <= PLAYER_RADIUS_SQUARED
 		|| !rectContains({320, 240}, {300, 200}, bullet.pos)) {
 			//hit
@@ -259,12 +370,8 @@ DLL_EXPORT GameState* game_create(size_t* size) {
 	auto ret = (GameState*)malloc(sizeof(GameState));
 	*ret = {};
 	ret->enemies.add() = {
+		.type = {ENEMY_BOSS1},
 		.pos = {250.f, 80.f},
-		.counters={
-			{{.max = 30}, {.max = 300}, {.max = 120}},
-			{true, true, true},
-		},
-		.user_func = {boss1_routine},
 	};
 
 	//ret->enemies.add() = {.pos = {450.f, 50.f}, .counters={{{.max = 210}}, {}, {true}}};
