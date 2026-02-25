@@ -1,6 +1,8 @@
 #include <SDL2/SDL.h>
 #include "dll.h"
 #include "../../game.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 static const char* game_func_names[] = {
 	"game_create",
@@ -13,7 +15,7 @@ static struct {
 	void* (*create)(size_t*);
 	void (*update)(GameState*, VPadFrame, VPadFrame);
 	void (*render)(const GameState*);
-	void (*platform_renderer_setup)(SDL_Renderer*);
+	void (*platform_renderer_setup)(SDL_Renderer*, SDL_Texture*, SDL_Texture*);
 } game_api;
 
 bool platform_input_poll(VPadFrame* pad) {
@@ -33,6 +35,22 @@ bool platform_input_poll(VPadFrame* pad) {
 	pad->buttons |= keys[SDL_SCANCODE_X] << B_B;
 	pad->buttons |= keys[SDL_SCANCODE_C] << B_C;
 	return true;
+}
+
+static SDL_Texture* gfxLoadTexture(SDL_Renderer* main_renderer, const char* filename) {
+	int width = 0, height = 0, chan = 0;
+	void* buffer = stbi_load(filename, &width, &height, &chan, 4);
+	if(buffer) {
+		SDL_Texture* texture = SDL_CreateTexture(main_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, width, height);
+		SDL_UpdateTexture(texture, NULL, buffer, width * 4);
+		SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+		stbi_image_free(buffer);
+		return texture;
+	}
+	else {
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Missing file", filename, NULL);
+		return NULL;
+	}
 }
 
 int main(int argc, char* argv[]) {
@@ -55,10 +73,22 @@ int main(int argc, char* argv[]) {
 	}
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
+	SDL_Texture* texture_atlas = gfxLoadTexture(renderer, "atlas.png");
+	if(!texture_atlas) {
+		SDL_Log("Load atlas.png failed: %s\n", SDL_GetError());
+		exit(1);
+	}
+
+	SDL_Texture* texture_font = gfxLoadTexture(renderer, "font_dark.png");
+	if(!texture_font) {
+		SDL_Log("Load font.png failed: %s\n", SDL_GetError());
+		exit(1);
+	}
+
 	u64 dll_last_modified = getFileModifiedTime("libgame.dll");
 	Dll* dll = dllLoad("libgame");
 	dllGetFuncs(dll, (FnPtr*)&game_api, game_func_names, arrlen(game_func_names));
-	game_api.platform_renderer_setup(renderer);
+	game_api.platform_renderer_setup(renderer, texture_atlas, texture_font);
 
 	size_t game_size;
 	GameState* gs = game_api.create(&game_size);
@@ -82,7 +112,7 @@ int main(int argc, char* argv[]) {
 			dllUnload(dll);
 			dll = dllLoad("libgame");
 			dllGetFuncs(dll, (FnPtr*)&game_api, game_func_names, arrlen(game_func_names));
-			game_api.platform_renderer_setup(renderer);
+			game_api.platform_renderer_setup(renderer, texture_atlas, texture_font);
 		}
 
 		prev = curr;
